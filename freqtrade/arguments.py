@@ -72,6 +72,11 @@ AVAILABLE_CLI_OPTIONS = {
         help='Specify additional strategy lookup path.',
         metavar='PATH',
     ),
+    "strategy_params": Arg(
+        '--strategy-params',
+        help='Specify strategy class params, in JSON format.',
+        metavar='JSON_STRING',
+    ),
     "dynamic_whitelist": Arg(
         '--dynamic-whitelist',
         help='Dynamically generate and update whitelist '
@@ -296,7 +301,7 @@ AVAILABLE_CLI_OPTIONS = {
 
 ARGS_COMMON = ["verbosity", "logfile", "version", "config", "datadir"]
 
-ARGS_STRATEGY = ["strategy", "strategy_path"]
+ARGS_STRATEGY = ["strategy", "strategy_path", "strategy_params"]
 
 ARGS_MAIN = ARGS_COMMON + ARGS_STRATEGY + ["dynamic_whitelist", "db_url", "sd_notify"]
 

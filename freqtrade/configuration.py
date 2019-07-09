@@ -15,7 +15,7 @@ from freqtrade import OperationalException, constants
 from freqtrade.exchange import (is_exchange_bad, is_exchange_available,
                                 is_exchange_officially_supported, available_exchanges)
 from freqtrade.loggers import setup_logging
-from freqtrade.misc import deep_merge_dicts
+from freqtrade.misc import deep_merge_dicts, json_loads
 from freqtrade.state import RunMode
 
 
@@ -183,6 +183,15 @@ class Configuration(object):
             config['max_open_trades'] = float('inf')
 
         logger.info(f'Using DB: "{config["db_url"]}"')
+
+        if 'strategy_params' in self.args and self.args.strategy_params:
+            try:
+                config['strategy_params'] = json_loads(self.args.strategy_params)
+            except OperationalException as e:
+                raise OperationalException(
+                        f"Cannot load strategy parameters: {e}. "
+                        f"--strategy-params={self.args.strategy_params}")
+            logger.info(f"Loaded strategy params: {config['strategy_params']}")
 
         # Check if the exchange set by the user is supported
         self.check_exchange(config)

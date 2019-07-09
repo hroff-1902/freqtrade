@@ -9,9 +9,9 @@ from base64 import urlsafe_b64decode
 from collections import OrderedDict
 from inspect import getfullargspec
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
-from freqtrade import constants
+from freqtrade import OperationalException, constants
 from freqtrade.resolvers import IResolver
 from freqtrade.strategy import import_strategy
 from freqtrade.strategy.interface import IStrategy
@@ -81,7 +81,14 @@ class StrategyResolver(IResolver):
             key=lambda t: t[0]))
         self.strategy.stoploss = float(self.strategy.stoploss)
 
+        self._set_params(config.get('strategy_params', None))
+
         self._strategy_sanity_validations()
+
+    def _set_params(self, params: Optional[Dict[str, Any]] = None):
+        if params is not None:
+            self.module.params = params # type: ignore
+            logger.info(f"Using strategy parameters: params = {params}.")
 
     def _override_attribute_helper(self, config, attribute: str, default):
         """

@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 from pandas import DataFrame
 
-from freqtrade.resolvers import StrategyResolver
+from freqtrade.resolvers import IResolver, StrategyResolver
 from freqtrade.strategy import import_strategy
 from freqtrade.strategy.default_strategy import DefaultStrategy
 from freqtrade.strategy.interface import IStrategy
@@ -44,8 +44,9 @@ def test_import_strategy(caplog):
 def test_search_strategy():
     default_config = {}
     default_location = Path(__file__).parent.parent.joinpath('strategy').resolve()
+    resolver = IResolver()
     assert isinstance(
-        StrategyResolver._search_object(
+        resolver._search_object(
             directory=default_location,
             object_type=IStrategy,
             kwargs={'config': default_config},
@@ -53,7 +54,7 @@ def test_search_strategy():
         ),
         IStrategy
     )
-    assert StrategyResolver._search_object(
+    assert resolver._search_object(
         directory=default_location,
         object_type=IStrategy,
         kwargs={'config': default_config},

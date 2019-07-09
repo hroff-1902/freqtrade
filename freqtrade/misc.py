@@ -9,6 +9,8 @@ from datetime import datetime
 import numpy as np
 import rapidjson
 
+from freqtrade import OperationalException
+
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,14 @@ def file_dump_json(filename, data, is_zip=False) -> None:
 
     logger.debug(f'done json to "{filename}"')
 
+
+def json_loads(string: str):
+    try:
+        data = rapidjson.loads(string)
+    except rapidjson.JSONDecodeError as e:
+        raise OperationalException(str(e))
+
+    return data
 
 def json_load(datafile):
     """
