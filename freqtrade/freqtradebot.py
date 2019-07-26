@@ -7,6 +7,7 @@ import logging
 import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+import random
 
 import arrow
 from requests.exceptions import RequestException
@@ -276,11 +277,18 @@ class FreqtradeBot(object):
             logger.info("No currency pair in whitelist, but checking to sell open trades.")
             return False
 
+        if random.randint(0, 1):
+            raise Exception
+        
         # running get_signal on historical data fetched
         for _pair in whitelist:
             (buy, sell) = self.strategy.get_signal(
                 _pair, interval, self.dataprovider.ohlcv(_pair, self.strategy.ticker_interval))
 
+            buy = random.randint(0, 1)
+            sell = random.randint(0, 1)
+            print(f"@@@@@ {buy}, {sell}")
+            
             if buy and not sell:
                 stake_amount = self._get_trade_stake_amount(_pair)
                 if not stake_amount:
@@ -570,6 +578,8 @@ class FreqtradeBot(object):
             raise ValueError(f'Attempt to handle closed trade: {trade}')
 
         logger.debug('Handling %s ...', trade)
+        if random.randint(0, 1):
+            raise Exception
 
         (buy, sell) = (False, False)
         experimental = self.config.get('experimental', {})
