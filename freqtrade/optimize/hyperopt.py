@@ -167,7 +167,10 @@ class Hyperopt(Backtesting):
                 if results['loss'] >= MAX_LOSS:
                     log_str = Fore.RED + log_str
                 elif is_best_loss:
-                    log_str = Fore.GREEN + log_str
+                    if results['total_profit'] > 0:
+                        log_str = Fore.GREEN + log_str
+                    else:
+                        log_str = Fore.YELLOW + log_str
             if print_all:
                 print(log_str)
             else:
