@@ -11,17 +11,20 @@ from typing import Any, Dict, List, NamedTuple, Optional
 
 from pandas import DataFrame
 
-from freqtrade import OperationalException
-from freqtrade.configuration import TimeRange
+from freqtrade.configuration import (TimeRange, remove_credentials,
+                                     validate_config_consistency)
 from freqtrade.data import history
 from freqtrade.data.dataprovider import DataProvider
-from freqtrade.exchange import timeframe_to_minutes
+from freqtrade.exceptions import OperationalException
+from freqtrade.exchange import timeframe_to_minutes, timeframe_to_seconds
 from freqtrade.misc import file_dump_json
+from freqtrade.optimize.optimize_reports import (
+    generate_text_table, generate_text_table_sell_reason,
+    generate_text_table_strategy)
 from freqtrade.persistence import Trade
 from freqtrade.resolvers import ExchangeResolver, StrategyResolver
 from freqtrade.state import RunMode
 from freqtrade.strategy.interface import IStrategy, SellType
-from tabulate import tabulate
 
 logger = logging.getLogger(__name__)
 
@@ -57,15 +60,14 @@ class Backtesting:
         self.config = config
 
         # Reset keys for backtesting
-        self.config['exchange']['key'] = ''
-        self.config['exchange']['secret'] = ''
-        self.config['exchange']['password'] = ''
-        self.config['exchange']['uid'] = ''
-        self.config['dry_run'] = True
+        remove_credentials(self.config)
         self.strategylist: List[IStrategy] = []
+        self.exchange = ExchangeResolver.load_exchange(self.config['exchange']['name'], self.config)
 
-        self.exchange = ExchangeResolver(self.config['exchange']['name'], self.config).exchange
-        self.fee = self.exchange.get_fee()
+        if config.get('fee'):
+            self.fee = config['fee']
+        else:
+            self.fee = self.exchange.get_fee(symbol=self.config['exchange']['pair_whitelist'][0])
 
         if self.config.get('runmode') != RunMode.HYPEROPT:
             self.dataprovider = DataProvider(self.config, self.exchange)
@@ -75,18 +77,22 @@ class Backtesting:
             for strat in list(self.config['strategy_list']):
                 stratconf = deepcopy(self.config)
                 stratconf['strategy'] = strat
-                self.strategylist.append(StrategyResolver(stratconf).strategy)
+                self.strategylist.append(StrategyResolver.load_strategy(stratconf))
+                validate_config_consistency(stratconf)
 
         else:
             # No strategy list specified, only one strategy
-            self.strategylist.append(StrategyResolver(self.config).strategy)
+            self.strategylist.append(StrategyResolver.load_strategy(self.config))
+            validate_config_consistency(self.config)
 
         if "ticker_interval" not in self.config:
             raise OperationalException("Ticker-interval needs to be set in either configuration "
                                        "or as cli argument `--ticker-interval 5m`")
-        self.ticker_interval = str(self.config.get('ticker_interval'))
-        self.ticker_interval_mins = timeframe_to_minutes(self.ticker_interval)
+        self.timeframe = str(self.config.get('ticker_interval'))
+        self.timeframe_min = timeframe_to_minutes(self.timeframe)
 
+        # Get maximum required startup period
+        self.required_startup = max([strat.startup_candle_count for strat in self.strategylist])
         # Load one (first) strategy
         self._set_strategy(self.strategylist[0])
 
@@ -100,93 +106,30 @@ class Backtesting:
         # And the regular "stoploss" function would not apply to that case
         self.strategy.order_types['stoploss_on_exchange'] = False
 
-    def _generate_text_table(self, data: Dict[str, Dict], results: DataFrame,
-                             skip_nan: bool = False) -> str:
-        """
-        Generates and returns a text table for the given backtest data and the results dataframe
-        :return: pretty printed table with tabulate as str
-        """
-        stake_currency = str(self.config.get('stake_currency'))
-        max_open_trades = self.config.get('max_open_trades')
+    def load_bt_data(self):
+        timerange = TimeRange.parse_timerange(None if self.config.get(
+            'timerange') is None else str(self.config.get('timerange')))
 
-        floatfmt = ('s', 'd', '.2f', '.2f', '.8f', '.2f', 'd', '.1f', '.1f')
-        tabular_data = []
-        headers = ['pair', 'buy count', 'avg profit %', 'cum profit %',
-                   'tot profit ' + stake_currency, 'tot profit %', 'avg duration',
-                   'profit', 'loss']
-        for pair in data:
-            result = results[results.pair == pair]
-            if skip_nan and result.profit_abs.isnull().all():
-                continue
+        data = history.load_data(
+            datadir=self.config['datadir'],
+            pairs=self.config['exchange']['pair_whitelist'],
+            timeframe=self.timeframe,
+            timerange=timerange,
+            startup_candles=self.required_startup,
+            fail_without_data=True,
+        )
 
-            tabular_data.append([
-                pair,
-                len(result.index),
-                result.profit_percent.mean() * 100.0,
-                result.profit_percent.sum() * 100.0,
-                result.profit_abs.sum(),
-                result.profit_percent.sum() * 100.0 / max_open_trades,
-                str(timedelta(
-                    minutes=round(result.trade_duration.mean()))) if not result.empty else '0:00',
-                len(result[result.profit_abs > 0]),
-                len(result[result.profit_abs < 0])
-            ])
+        min_date, max_date = history.get_timerange(data)
 
-        # Append Total
-        tabular_data.append([
-            'TOTAL',
-            len(results.index),
-            results.profit_percent.mean() * 100.0,
-            results.profit_percent.sum() * 100.0,
-            results.profit_abs.sum(),
-            results.profit_percent.sum() * 100.0 / max_open_trades,
-            str(timedelta(
-                minutes=round(results.trade_duration.mean()))) if not results.empty else '0:00',
-            len(results[results.profit_abs > 0]),
-            len(results[results.profit_abs < 0])
-        ])
-        # Ignore type as floatfmt does allow tuples but mypy does not know that
-        return tabulate(tabular_data, headers=headers,  # type: ignore
-                        floatfmt=floatfmt, tablefmt="pipe")
+        logger.info(
+            'Loading data from %s up to %s (%s days)..',
+            min_date.isoformat(), max_date.isoformat(), (max_date - min_date).days
+        )
+        # Adjust startts forward if not enough data is available
+        timerange.adjust_start_if_necessary(timeframe_to_seconds(self.timeframe),
+                                            self.required_startup, min_date)
 
-    def _generate_text_table_sell_reason(self, data: Dict[str, Dict], results: DataFrame) -> str:
-        """
-        Generate small table outlining Backtest results
-        """
-        tabular_data = []
-        headers = ['Sell Reason', 'Count']
-        for reason, count in results['sell_reason'].value_counts().iteritems():
-            tabular_data.append([reason.value,  count])
-        return tabulate(tabular_data, headers=headers, tablefmt="pipe")
-
-    def _generate_text_table_strategy(self, all_results: dict) -> str:
-        """
-        Generate summary table per strategy
-        """
-        stake_currency = str(self.config.get('stake_currency'))
-        max_open_trades = self.config.get('max_open_trades')
-
-        floatfmt = ('s', 'd', '.2f', '.2f', '.8f', '.2f', 'd', '.1f', '.1f')
-        tabular_data = []
-        headers = ['Strategy', 'buy count', 'avg profit %', 'cum profit %',
-                   'tot profit ' + stake_currency, 'tot profit %', 'avg duration',
-                   'profit', 'loss']
-        for strategy, results in all_results.items():
-            tabular_data.append([
-                strategy,
-                len(results.index),
-                results.profit_percent.mean() * 100.0,
-                results.profit_percent.sum() * 100.0,
-                results.profit_abs.sum(),
-                results.profit_percent.sum() * 100.0 / max_open_trades,
-                str(timedelta(
-                    minutes=round(results.trade_duration.mean()))) if not results.empty else '0:00',
-                len(results[results.profit_abs > 0]),
-                len(results[results.profit_abs < 0])
-            ])
-        # Ignore type as floatfmt does allow tuples but mypy does not know that
-        return tabulate(tabular_data, headers=headers,  # type: ignore
-                        floatfmt=floatfmt, tablefmt="pipe")
+        return data, timerange
 
     def _store_backtest_result(self, recordfilename: Path, results: DataFrame,
                                strategyname: Optional[str] = None) -> None:
@@ -215,7 +158,8 @@ class Backtesting:
         ticker: Dict = {}
         # Create ticker dict
         for pair, pair_data in processed.items():
-            pair_data['buy'], pair_data['sell'] = 0, 0  # cleanup from previous run
+            pair_data.loc[:, 'buy'] = 0  # cleanup from previous run
+            pair_data.loc[:, 'sell'] = 0  # cleanup from previous run
 
             ticker_data = self.strategy.advise_sell(
                 self.strategy.advise_buy(pair_data, {'pair': pair}), {'pair': pair})[headers].copy()
@@ -230,6 +174,45 @@ class Backtesting:
             # (Looping Pandas is slow.)
             ticker[pair] = [x for x in ticker_data.itertuples()]
         return ticker
+
+    def _get_close_rate(self, sell_row, trade: Trade, sell, trade_dur) -> float:
+        """
+        Get close rate for backtesting result
+        """
+        # Special handling if high or low hit STOP_LOSS or ROI
+        if sell.sell_type in (SellType.STOP_LOSS, SellType.TRAILING_STOP_LOSS):
+            # Set close_rate to stoploss
+            return trade.stop_loss
+        elif sell.sell_type == (SellType.ROI):
+            roi_entry, roi = self.strategy.min_roi_reached_entry(trade_dur)
+            if roi is not None:
+                if roi == -1 and roi_entry % self.timeframe_min == 0:
+                    # When forceselling with ROI=-1, the roi time will always be equal to trade_dur.
+                    # If that entry is a multiple of the timeframe (so on candle open)
+                    # - we'll use open instead of close
+                    return sell_row.open
+
+                # - (Expected abs profit + open_rate + open_fee) / (fee_close -1)
+                close_rate = - (trade.open_rate * roi + trade.open_rate *
+                                (1 + trade.fee_open)) / (trade.fee_close - 1)
+
+                if (trade_dur > 0 and trade_dur == roi_entry
+                        and roi_entry % self.timeframe_min == 0
+                        and sell_row.open > close_rate):
+                    # new ROI entry came into effect.
+                    # use Open rate if open_rate > calculated sell rate
+                    return sell_row.open
+
+                # Use the maximum between close_rate and low as we
+                # cannot sell outside of a candle.
+                # Applies when a new ROI setting comes in place and the whole candle is above that.
+                return max(close_rate, sell_row.low)
+
+            else:
+                # This should not be reached...
+                return sell_row.open
+        else:
+            return sell_row.open
 
     def _get_sell_trade_entry(
             self, pair: str, buy_row: DataFrame,
@@ -257,24 +240,10 @@ class Backtesting:
                                              sell_row.sell, low=sell_row.low, high=sell_row.high)
             if sell.sell_flag:
                 trade_dur = int((sell_row.date - buy_row.date).total_seconds() // 60)
-                # Special handling if high or low hit STOP_LOSS or ROI
-                if sell.sell_type in (SellType.STOP_LOSS, SellType.TRAILING_STOP_LOSS):
-                    # Set close_rate to stoploss
-                    closerate = trade.stop_loss
-                elif sell.sell_type == (SellType.ROI):
-                    roi = self.strategy.min_roi_reached_entry(trade_dur)
-                    if roi is not None:
-                        # - (Expected abs profit + open_rate + open_fee) / (fee_close -1)
-                        closerate = - (trade.open_rate * roi + trade.open_rate *
-                                       (1 + trade.fee_open)) / (trade.fee_close - 1)
-                    else:
-                        # This should not be reached...
-                        closerate = sell_row.open
-                else:
-                    closerate = sell_row.open
+                closerate = self._get_close_rate(sell_row, trade, sell, trade_dur)
 
                 return BacktestResult(pair=pair,
-                                      profit_percent=trade.calc_profit_percent(rate=closerate),
+                                      profit_percent=trade.calc_profit_ratio(rate=closerate),
                                       profit_abs=trade.calc_profit(rate=closerate),
                                       open_time=buy_row.date,
                                       close_time=sell_row.date,
@@ -290,7 +259,7 @@ class Backtesting:
             # no sell condition found - trade stil open at end of backtest period
             sell_row = partial_ticker[-1]
             bt_res = BacktestResult(pair=pair,
-                                    profit_percent=trade.calc_profit_percent(rate=sell_row.open),
+                                    profit_percent=trade.calc_profit_ratio(rate=sell_row.open),
                                     profit_abs=trade.calc_profit(rate=sell_row.open),
                                     open_time=buy_row.date,
                                     close_time=sell_row.date,
@@ -310,30 +279,28 @@ class Backtesting:
             return bt_res
         return None
 
-    def backtest(self, args: Dict) -> DataFrame:
+    def backtest(self, processed: Dict, stake_amount: float,
+                 start_date, end_date,
+                 max_open_trades: int = 0, position_stacking: bool = False) -> DataFrame:
         """
-        Implements backtesting functionality
+        Implement backtesting functionality
 
         NOTE: This method is used by Hyperopt at each iteration. Please keep it optimized.
         Of course try to not have ugly code. By some accessor are sometime slower than functions.
-        Avoid, logging on this method
+        Avoid extensive logging in this method and functions it calls.
 
-        :param args: a dict containing:
-            stake_amount: btc amount to use for each trade
-            processed: a processed dictionary with format {pair, data}
-            max_open_trades: maximum number of concurrent trades (default: 0, disabled)
-            position_stacking: do we allow position stacking? (default: False)
-        :return: DataFrame
+        :param processed: a processed dictionary with format {pair, data}
+        :param stake_amount: amount to use for each trade
+        :param start_date: backtesting timerange start datetime
+        :param end_date: backtesting timerange end datetime
+        :param max_open_trades: maximum number of concurrent trades, <= 0 means unlimited
+        :param position_stacking: do we allow position stacking?
+        :return: DataFrame with trades (results of backtesting)
         """
-        # Arguments are long and noisy, so this is commented out.
-        # Uncomment if you need to debug the backtest() method.
-#        logger.debug(f"Start backtest, args: {args}")
-        processed = args['processed']
-        stake_amount = args['stake_amount']
-        max_open_trades = args.get('max_open_trades', 0)
-        position_stacking = args.get('position_stacking', False)
-        start_date = args['start_date']
-        end_date = args['end_date']
+        logger.debug(f"Run backtest, stake_amount: {stake_amount}, "
+                     f"start_date: {start_date}, end_date: {end_date}, "
+                     f"max_open_trades: {max_open_trades}, position_stacking: {position_stacking}"
+                     )
         trades = []
         trade_count_lock: Dict = {}
 
@@ -343,7 +310,7 @@ class Backtesting:
         lock_pair_until: Dict = {}
         # Indexes per pair, so some pairs are allowed to have a missing start.
         indexes: Dict = {}
-        tmp = start_date + timedelta(minutes=self.ticker_interval_mins)
+        tmp = start_date + timedelta(minutes=self.timeframe_min)
 
         # Loop timerange and get candle for each pair at that point in time
         while tmp < end_date:
@@ -395,48 +362,30 @@ class Backtesting:
                     lock_pair_until[pair] = end_date.datetime
 
             # Move time one configured time_interval ahead.
-            tmp += timedelta(minutes=self.ticker_interval_mins)
+            tmp += timedelta(minutes=self.timeframe_min)
         return DataFrame.from_records(trades, columns=BacktestResult._fields)
 
     def start(self) -> None:
         """
-        Run a backtesting end-to-end
+        Run backtesting end-to-end
         :return: None
         """
         data: Dict[str, Any] = {}
-        pairs = self.config['exchange']['pair_whitelist']
+
         logger.info('Using stake_currency: %s ...', self.config['stake_currency'])
         logger.info('Using stake_amount: %s ...', self.config['stake_amount'])
 
-        timerange = TimeRange.parse_timerange(None if self.config.get(
-            'timerange') is None else str(self.config.get('timerange')))
-        data = history.load_data(
-            datadir=Path(self.config['datadir']),
-            pairs=pairs,
-            ticker_interval=self.ticker_interval,
-            timerange=timerange,
-        )
-
-        if not data:
-            logger.critical("No data found. Terminating.")
-            return
         # Use max_open_trades in backtesting, except --disable-max-market-positions is set
         if self.config.get('use_max_market_positions', True):
             max_open_trades = self.config['max_open_trades']
         else:
             logger.info('Ignoring max_open_trades (--disable-max-market-positions was used) ...')
             max_open_trades = 0
+        position_stacking = self.config.get('position_stacking', False)
+
+        data, timerange = self.load_bt_data()
+
         all_results = {}
-
-        min_date, max_date = history.get_timeframe(data)
-
-        logger.info(
-            'Backtesting with data from %s up to %s (%s days)..',
-            min_date.isoformat(),
-            max_date.isoformat(),
-            (max_date - min_date).days
-        )
-
         for strat in self.strategylist:
             logger.info("Running backtesting for Strategy %s", strat.get_strategy_name())
             self._set_strategy(strat)
@@ -444,16 +393,23 @@ class Backtesting:
             # need to reprocess data every time to populate signals
             preprocessed = self.strategy.tickerdata_to_dataframe(data)
 
+            # Trim startup period from analyzed dataframe
+            for pair, df in preprocessed.items():
+                preprocessed[pair] = history.trim_dataframe(df, timerange)
+            min_date, max_date = history.get_timerange(preprocessed)
+
+            logger.info(
+                'Backtesting with data from %s up to %s (%s days)..',
+                min_date.isoformat(), max_date.isoformat(), (max_date - min_date).days
+            )
             # Execute backtest and print results
             all_results[self.strategy.get_strategy_name()] = self.backtest(
-                {
-                    'stake_amount': self.config.get('stake_amount'),
-                    'processed': preprocessed,
-                    'max_open_trades': max_open_trades,
-                    'position_stacking': self.config.get('position_stacking', False),
-                    'start_date': min_date,
-                    'end_date': max_date,
-                }
+                    processed=preprocessed,
+                    stake_amount=self.config['stake_amount'],
+                    start_date=min_date,
+                    end_date=max_date,
+                    max_open_trades=max_open_trades,
+                    position_stacking=position_stacking,
             )
 
         for strategy, results in all_results.items():
@@ -464,16 +420,24 @@ class Backtesting:
 
             print(f"Result for strategy {strategy}")
             print(' BACKTESTING REPORT '.center(133, '='))
-            print(self._generate_text_table(data, results))
+            print(generate_text_table(data,
+                                      stake_currency=self.config['stake_currency'],
+                                      max_open_trades=self.config['max_open_trades'],
+                                      results=results))
 
             print(' SELL REASON STATS '.center(133, '='))
-            print(self._generate_text_table_sell_reason(data, results))
+            print(generate_text_table_sell_reason(data, results))
 
             print(' LEFT OPEN TRADES REPORT '.center(133, '='))
-            print(self._generate_text_table(data, results.loc[results.open_at_end], True))
+            print(generate_text_table(data,
+                                      stake_currency=self.config['stake_currency'],
+                                      max_open_trades=self.config['max_open_trades'],
+                                      results=results.loc[results.open_at_end], skip_nan=True))
             print()
         if len(all_results) > 1:
             # Print Strategy summary table
             print(' Strategy Summary '.center(133, '='))
-            print(self._generate_text_table_strategy(all_results))
+            print(generate_text_table_strategy(self.config['stake_currency'],
+                                               self.config['max_open_trades'],
+                                               all_results=all_results))
             print('\nFor more details, please look at the detail tables above')

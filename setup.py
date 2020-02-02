@@ -43,6 +43,7 @@ jupyter = [
     'jupyter',
     'nbstripout',
     'ipykernel',
+    'nbconvert',
     ]
 
 all_extra = api + plot + develop + jupyter + hyperopt
@@ -58,7 +59,7 @@ setup(name='freqtrade',
       license='GPLv3',
       packages=['freqtrade'],
       setup_requires=['pytest-runner', 'numpy'],
-      tests_require=['pytest', 'pytest-mock', 'pytest-cov'],
+      tests_require=['pytest', 'pytest-asyncio', 'pytest-cov', 'pytest-mock', ],
       install_requires=[
           # from requirements-common.txt
           'ccxt>=1.18.1080',
@@ -77,6 +78,7 @@ setup(name='freqtrade',
           'python-rapidjson',
           'sdnotify',
           'colorama',
+          'jinja2',
           # from requirements.txt
           'numpy',
           'pandas',
@@ -97,8 +99,12 @@ setup(name='freqtrade',
           ],
       },
       classifiers=[
-          'Programming Language :: Python :: 3.6',
-          'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
-          'Topic :: Office/Business :: Financial :: Investment',
+          'Environment :: Console',
           'Intended Audience :: Science/Research',
+          'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
+          'Programming Language :: Python :: 3.6',
+          'Programming Language :: Python :: 3.7',
+          'Operating System :: MacOS',
+          'Operating System :: Unix',
+          'Topic :: Office/Business :: Financial :: Investment',
       ])

@@ -78,8 +78,8 @@ class IStrategy(ABC):
 
     # trailing stoploss
     trailing_stop: bool = False
-    trailing_stop_positive: float
-    trailing_stop_positive_offset: float
+    trailing_stop_positive: Optional[float] = None
+    trailing_stop_positive_offset: float = 0.0
     trailing_only_offset_is_reached = False
 
     # associated ticker interval
@@ -103,11 +103,17 @@ class IStrategy(ABC):
     # run "populate_indicators" only for new candle
     process_only_new_candles: bool = False
 
+    # Count of candles the strategy requires before producing valid signals
+    startup_candle_count: int = 0
+
     # Class level variables (intentional) containing
     # the dataprovider (dp) (access to other candles, historic data, ...)
     # and wallets - access to the current balance.
-    dp: DataProvider
-    wallets: Wallets
+    dp: Optional[DataProvider] = None
+    wallets: Optional[Wallets] = None
+
+    # Definition of plot_config. See plotting documentation for more details.
+    plot_config: Dict = {}
 
     def __init__(self, config: dict) -> None:
         self.config = config
@@ -165,11 +171,24 @@ class IStrategy(ABC):
         """
         Locks pair until a given timestamp happens.
         Locked pairs are not analyzed, and are prevented from opening new trades.
+        Locks can only count up (allowing users to lock pairs for a longer period of time).
+        To remove a lock from a pair, use `unlock_pair()`
         :param pair: Pair to lock
         :param until: datetime in UTC until the pair should be blocked from opening new trades.
                 Needs to be timezone aware `datetime.now(timezone.utc)`
         """
-        self._pair_locked_until[pair] = until
+        if pair not in self._pair_locked_until or self._pair_locked_until[pair] < until:
+            self._pair_locked_until[pair] = until
+
+    def unlock_pair(self, pair) -> None:
+        """
+        Unlocks a pair previously locked using lock_pair.
+        Not used by freqtrade itself, but intended to be used if users lock pairs
+        manually from within the strategy, to allow an easy way to unlock pairs.
+        :param pair: Unlock pair to allow trading again
+        """
+        if pair in self._pair_locked_until:
+            del self._pair_locked_until[pair]
 
     def is_pair_locked(self, pair: str) -> bool:
         """
@@ -293,7 +312,7 @@ class IStrategy(ABC):
         """
         # Set current rate to low for backtesting sell
         current_rate = low or rate
-        current_profit = trade.calc_profit_percent(current_rate)
+        current_profit = trade.calc_profit_ratio(current_rate)
 
         trade.adjust_min_max_rates(high or current_rate)
 
@@ -308,10 +327,10 @@ class IStrategy(ABC):
 
         # Set current rate to high for backtesting sell
         current_rate = high or rate
-        current_profit = trade.calc_profit_percent(current_rate)
-        experimental = self.config.get('experimental', {})
+        current_profit = trade.calc_profit_ratio(current_rate)
+        config_ask_strategy = self.config.get('ask_strategy', {})
 
-        if buy and experimental.get('ignore_roi_if_buy_signal', False):
+        if buy and config_ask_strategy.get('ignore_roi_if_buy_signal', False):
             # This one is noisy, commented out
             # logger.debug(f"{trade.pair} - Buy signal still active. sell_flag=False")
             return SellCheckTuple(sell_flag=False, sell_type=SellType.NONE)
@@ -322,7 +341,7 @@ class IStrategy(ABC):
                          f"sell_type=SellType.ROI")
             return SellCheckTuple(sell_flag=True, sell_type=SellType.ROI)
 
-        if experimental.get('sell_profit_only', False):
+        if config_ask_strategy.get('sell_profit_only', False):
             # This one is noisy, commented out
             # logger.debug(f"{trade.pair} - Checking if trade is profitable...")
             if trade.calc_profit(rate=rate) <= 0:
@@ -330,7 +349,7 @@ class IStrategy(ABC):
                 # logger.debug(f"{trade.pair} - Trade is not profitable. sell_flag=False")
                 return SellCheckTuple(sell_flag=False, sell_type=SellType.NONE)
 
-        if sell and not buy and experimental.get('use_sell_signal', False):
+        if sell and not buy and config_ask_strategy.get('use_sell_signal', True):
             logger.debug(f"{trade.pair} - Sell signal received. sell_flag=True, "
                          f"sell_type=SellType.SELL_SIGNAL")
             return SellCheckTuple(sell_flag=True, sell_type=SellType.SELL_SIGNAL)
@@ -347,35 +366,34 @@ class IStrategy(ABC):
         decides to sell or not
         :param current_profit: current profit in percent
         """
-        trailing_stop = self.config.get('trailing_stop', False)
         stop_loss_value = force_stoploss if force_stoploss else self.stoploss
 
         # Initiate stoploss with open_rate. Does nothing if stoploss is already set.
         trade.adjust_stop_loss(trade.open_rate, stop_loss_value, initial=True)
 
-        if trailing_stop:
+        if self.trailing_stop:
             # trailing stoploss handling
-            sl_offset = self.config.get('trailing_stop_positive_offset') or 0.0
-            tsl_only_offset = self.config.get('trailing_only_offset_is_reached', False)
+            sl_offset = self.trailing_stop_positive_offset
 
             # Make sure current_profit is calculated using high for backtesting.
-            high_profit = current_profit if not high else trade.calc_profit_percent(high)
+            high_profit = current_profit if not high else trade.calc_profit_ratio(high)
 
             # Don't update stoploss if trailing_only_offset_is_reached is true.
-            if not (tsl_only_offset and high_profit < sl_offset):
+            if not (self.trailing_only_offset_is_reached and high_profit < sl_offset):
                 # Specific handling for trailing_stop_positive
-                if 'trailing_stop_positive' in self.config and high_profit > sl_offset:
-                    # Ignore mypy error check in configuration that this is a float
-                    stop_loss_value = self.config.get('trailing_stop_positive')  # type: ignore
+                if self.trailing_stop_positive is not None and high_profit > sl_offset:
+                    stop_loss_value = self.trailing_stop_positive
                     logger.debug(f"{trade.pair} - Using positive stoploss: {stop_loss_value} "
                                  f"offset: {sl_offset:.4g} profit: {current_profit:.4f}%")
 
                 trade.adjust_stop_loss(high or current_rate, stop_loss_value)
 
         # evaluate if the stoploss was hit if stoploss is not on exchange
+        # in Dry-Run, this handles stoploss logic as well, as the logic will not be different to
+        # regular stoploss handling.
         if ((self.stoploss is not None) and
             (trade.stop_loss >= current_rate) and
-                (not self.order_types.get('stoploss_on_exchange'))):
+                (not self.order_types.get('stoploss_on_exchange') or self.config['dry_run'])):
 
             sell_type = SellType.STOP_LOSS
 
@@ -394,7 +412,7 @@ class IStrategy(ABC):
 
         return SellCheckTuple(sell_flag=False, sell_type=SellType.NONE)
 
-    def min_roi_reached_entry(self, trade_dur: int) -> Optional[float]:
+    def min_roi_reached_entry(self, trade_dur: int) -> Tuple[Optional[int], Optional[float]]:
         """
         Based on trade duration defines the ROI entry that may have been reached.
         :param trade_dur: trade duration in minutes
@@ -403,9 +421,9 @@ class IStrategy(ABC):
         # Get highest entry in ROI dict where key <= trade-duration
         roi_list = list(filter(lambda x: x <= trade_dur, self.minimal_roi.keys()))
         if not roi_list:
-            return None
+            return None, None
         roi_entry = max(roi_list)
-        return self.minimal_roi[roi_entry]
+        return roi_entry, self.minimal_roi[roi_entry]
 
     def min_roi_reached(self, trade: Trade, current_profit: float, current_time: datetime) -> bool:
         """
@@ -415,7 +433,7 @@ class IStrategy(ABC):
         """
         # Check if time matches and current rate is above threshold
         trade_dur = int((current_time.timestamp() - trade.open_date.timestamp()) // 60)
-        roi = self.min_roi_reached_entry(trade_dur)
+        _, roi = self.min_roi_reached_entry(trade_dur)
         if roi is None:
             return False
         else:
@@ -424,6 +442,7 @@ class IStrategy(ABC):
     def tickerdata_to_dataframe(self, tickerdata: Dict[str, List]) -> Dict[str, DataFrame]:
         """
         Creates a dataframe and populates indicators for given ticker data
+        Used by optimize operations only, not during dry / live runs.
         """
         return {pair: self.advise_indicators(pair_data, {'pair': pair})
                 for pair, pair_data in tickerdata.items()}

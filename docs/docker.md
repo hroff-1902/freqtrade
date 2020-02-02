@@ -26,7 +26,7 @@ To update the image, simply run the above commands again and restart your runnin
 
 Should you require additional libraries, please [build the image yourself](#build-your-own-docker-image).
 
-!!! Note Docker image update frequency
+!!! Note "Docker image update frequency"
     The official docker images with tags `master`, `develop` and `latest` are automatically rebuild once a week to keep the base image uptodate.
     In addition to that, every merge to `develop` will trigger a rebuild for `develop` and `latest`.
 
@@ -160,15 +160,17 @@ docker run -d \
   -v ~/.freqtrade/config.json:/freqtrade/config.json \
   -v ~/.freqtrade/user_data/:/freqtrade/user_data \
   -v ~/.freqtrade/tradesv3.sqlite:/freqtrade/tradesv3.sqlite \
-  freqtrade --db-url sqlite:///tradesv3.sqlite --strategy MyAwesomeStrategy
+  freqtrade trade --db-url sqlite:///tradesv3.sqlite --strategy MyAwesomeStrategy
 ```
 
 !!! Note
-    db-url defaults to `sqlite:///tradesv3.sqlite` but it defaults to `sqlite://` if `dry_run=True` is being used.
-    To override this behaviour use a custom db-url value: i.e.: `--db-url sqlite:///tradesv3.dryrun.sqlite`
+    When using docker, it's best to specify `--db-url` explicitly to ensure that the database URL and the mounted database file match.
 
 !!! Note
     All available bot command line parameters can be added to the end of the `docker run` command.
+
+!!! Note
+    You can define a [restart policy](https://docs.docker.com/config/containers/start-containers-automatically/) in docker. It can be useful in some cases to use the `--restart unless-stopped` flag (crash of freqtrade or reboot of your system).
 
 ### Monitor your Docker instance
 
@@ -199,7 +201,7 @@ docker run -d \
   -v ~/.freqtrade/config.json:/freqtrade/config.json \
   -v ~/.freqtrade/tradesv3.sqlite:/freqtrade/tradesv3.sqlite \
   -v ~/.freqtrade/user_data/:/freqtrade/user_data/ \
-  freqtrade --strategy AwsomelyProfitableStrategy backtesting
+  freqtrade backtesting --strategy AwsomelyProfitableStrategy
 ```
 
 Head over to the [Backtesting Documentation](backtesting.md) for more details.

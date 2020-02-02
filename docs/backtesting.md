@@ -11,13 +11,14 @@ Now you have good Buy and Sell strategies and some historic data, you want to te
 real data. This is what we call
 [backtesting](https://en.wikipedia.org/wiki/Backtesting).
 
-Backtesting will use the crypto-currencies (pairs) from your config file
-and load ticker data from `user_data/data/<exchange>` by default.
-If no data is available for the exchange / pair / ticker interval combination, backtesting will
-ask you to download them first using `freqtrade download-data`.
+Backtesting will use the crypto-currencies (pairs) from your config file and load ticker data from `user_data/data/<exchange>` by default.
+If no data is available for the exchange / pair / ticker interval combination, backtesting will ask you to download them first using `freqtrade download-data`.
 For details on downloading, please refer to the [Data Downloading](data-download.md) section in the documentation.
 
 The result of backtesting will confirm if your bot has better odds of making a profit than a loss.
+
+!!! Tip "Using dynamic pairlists for backtesting"
+    While using dynamic pairlists during backtesting is not possible, a dynamic pairlist using current data can be generated via the [`test-pairlist`](utils.md#test-pairlist) command, and needs to be specified as `"pair_whitelist"` attribute in the configuration.
 
 ### Run a backtesting against the currencies listed in your config file
 
@@ -39,13 +40,13 @@ Assume you downloaded the history data from the Bittrex exchange and kept it in 
 You can then use this data for backtesting as follows:
 
 ```bash
-freqtrade backtesting --datadir user_data/data/bittrex-20180101
+freqtrade --datadir user_data/data/bittrex-20180101 backtesting
 ```
 
 #### With a (custom) strategy file
 
 ```bash
-freqtrade -s SampleStrategy backtesting
+freqtrade backtesting -s SampleStrategy
 ```
 
 Where `-s SampleStrategy` refers to the class name within the strategy file `sample_strategy.py` found in the `freqtrade/user_data/strategies` directory.
@@ -72,6 +73,23 @@ The exported trades can be used for [further analysis](#further-backtest-result-
 freqtrade backtesting --export trades --export-filename=backtest_samplestrategy.json
 ```
 
+Please also read about the [strategy startup period](strategy-customization.md#strategy-startup-period).
+
+#### Supplying custom fee value
+
+Sometimes your account has certain fee rebates (fee reductions starting with a certain account size or monthly volume), which are not visible to ccxt.
+To account for this in backtesting, you can use the `--fee` command line option to supply this value to backtesting.
+This fee must be a ratio, and will be applied twice (once for trade entry, and once for trade exit).
+
+For example, if the buying and selling commission fee is 0.1% (i.e., 0.001 written as ratio), then you would run backtesting as the following:
+
+```bash
+freqtrade backtesting --fee 0.001
+```
+
+!!! Note
+    Only supply this option (or the corresponding configuration parameter) if you want to experiment with different fee values. By default, Backtesting fetches the default fee from the exchange pair/market info.
+
 #### Running backtest with smaller testset by using timerange
 
 Use the `--timerange` argument to change how much of the testset you want to use.
@@ -92,12 +110,6 @@ The full timerange specification:
 - Use tickframes since 2018/01/31 till 2018/03/01 : `--timerange=20180131-20180301`
 - Use tickframes between POSIX timestamps 1527595200 1527618600:
                                                 `--timerange=1527595200-1527618600`
-- Use last 123 tickframes of data: `--timerange=-123`
-- Use first 123 tickframes of data: `--timerange=123-`
-- Use tickframes from line 123 through 456: `--timerange=123-456`
-
-!!! warning
-    Be carefull when using non-date functions - these do not allow you to specify precise dates, so if you updated the test-data it will probably use a different dataset.
 
 ## Understand the backtesting result
 
@@ -129,12 +141,12 @@ A backtesting result will look like that:
 | ZEC/BTC  |          22 |          -0.46 |         -10.18 |      -0.00050971 |          -5.09 | 2:22:00        |        7 |     15 |
 | TOTAL    |         429 |           0.36 |         152.41 |       0.00762792 |          76.20 | 4:12:00        |      186 |    243 |
 ========================================================= SELL REASON STATS =========================================================
-| Sell Reason        |   Count |
-|:-------------------|--------:|
-| trailing_stop_loss |     205 |
-| stop_loss          |     166 |
-| sell_signal        |      56 |
-| force_sell         |       2 |
+| Sell Reason        |   Count |   Profit |   Loss |
+|:-------------------|--------:|---------:|-------:|
+| trailing_stop_loss |     205 |      150 |     55 |
+| stop_loss          |     166 |        0 |    166 |
+| sell_signal        |      56 |       36 |     20 |
+| force_sell         |       2 |        0 |      2 |
 ====================================================== LEFT OPEN TRADES REPORT ======================================================
 | pair     |   buy count |   avg profit % |   cum profit % |   tot profit BTC |   tot profit % | avg duration   |   profit |   loss |
 |:---------|------------:|---------------:|---------------:|-----------------:|---------------:|:---------------|---------:|-------:|
@@ -146,6 +158,7 @@ A backtesting result will look like that:
 The 1st table contains all trades the bot made, including "left open trades".
 
 The 2nd table contains a recap of sell reasons.
+This table can tell you which area needs some additional work (i.e. all `sell_signal` trades are losses, so we should disable the sell-signal or work on improving that).
 
 The 3rd table contains all trades the bot had to `forcesell` at the end of the backtest period to present a full picture.
 This is necessary to simulate realistic behaviour, since the backtest period has to end at some point, while realistically, you could leave the bot running forever.
@@ -184,13 +197,22 @@ Hence, keep in mind that your performance is an integral mix of all different el
 Since backtesting lacks some detailed information about what happens within a candle, it needs to take a few assumptions:
 
 - Buys happen at open-price
+- Sell signal sells happen at open-price of the following candle
 - Low happens before high for stoploss, protecting capital first.
-- ROI sells are compared to high - but the ROI value is used (e.g. ROI = 2%, high=5% - so the sell will be at 2%)
+- ROI
+  - sells are compared to high - but the ROI value is used (e.g. ROI = 2%, high=5% - so the sell will be at 2%)
+  - sells are never "below the candle", so a ROI of 2% may result in a sell at 2.4% if low was at 2.4% profit
+  - Forcesells caused by `<N>=-1` ROI entries use low as sell value, unless N falls on the candle open (e.g. `120: -1` for 1h candles)
 - Stoploss sells happen exactly at stoploss price, even if low was lower
 - Trailing stoploss
   - High happens first - adjusting stoploss
   - Low uses the adjusted stoploss (so sells with large high-low difference are backtested correctly)
 - Sell-reason does not explain if a trade was positive or negative, just what triggered the sell (this can look odd if negative ROI values are used)
+
+Taking these assumptions, backtesting tries to mirror real trading as closely as possible. However, backtesting will **never** replace running a strategy in dry-run mode.
+Also, keep in mind that past results don't guarantee future success.
+
+In addition to the above assumptions, strategy authors should carefully read the [Common Mistakes](strategy-customization.md#common-mistakes-when-developing-strategies) section, to avoid using data in backtesting which is not available in real market conditions.
 
 ### Further backtest-result analysis
 

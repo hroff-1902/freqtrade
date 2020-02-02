@@ -18,7 +18,7 @@ class RPCManager:
         self.registered_modules: List[RPC] = []
 
         # Enable telegram
-        if freqtrade.config['telegram'].get('enabled', False):
+        if freqtrade.config.get('telegram', {}).get('enabled', False):
             logger.info('Enabling rpc.telegram ...')
             from freqtrade.rpc.telegram import Telegram
             self.registered_modules.append(Telegram(freqtrade))
@@ -62,7 +62,7 @@ class RPCManager:
                 logger.error(f"Message type {msg['type']} not implemented by handler {mod.name}.")
 
     def startup_messages(self, config, pairlist) -> None:
-        if config.get('dry_run', False):
+        if config['dry_run']:
             self.send_msg({
                 'type': RPCMessageType.WARNING_NOTIFICATION,
                 'status': 'Dry run is enabled. All trades are simulated.'

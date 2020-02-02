@@ -4,7 +4,7 @@ from typing import Dict
 
 import ccxt
 
-from freqtrade import OperationalException, TemporaryError
+from freqtrade.exceptions import OperationalException, TemporaryError
 from freqtrade.exchange import Exchange
 from freqtrade.exchange.exchange import retrier
 
@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 class Kraken(Exchange):
 
     _params: Dict = {"trading_agreement": "agree"}
+    _ft_has: Dict = {
+        "trades_pagination": "id",
+        "trades_pagination_arg": "since",
+    }
 
     @retrier
     def get_balances(self) -> dict:

@@ -37,9 +37,9 @@ def init_plotscript(config):
     timerange = TimeRange.parse_timerange(config.get("timerange"))
 
     tickers = history.load_data(
-        datadir=Path(str(config.get("datadir"))),
+        datadir=config.get("datadir"),
         pairs=pairs,
-        ticker_interval=config.get('ticker_interval', '5m'),
+        timeframe=config.get('ticker_interval', '5m'),
         timerange=timerange,
     )
 
@@ -47,31 +47,36 @@ def init_plotscript(config):
                          db_url=config.get('db_url'),
                          exportfilename=config.get('exportfilename'),
                          )
-
+    trades = history.trim_dataframe(trades, timerange, 'open_time')
     return {"tickers": tickers,
             "trades": trades,
             "pairs": pairs,
             }
 
 
-def add_indicators(fig, row, indicators: List[str], data: pd.DataFrame) -> make_subplots:
+def add_indicators(fig, row, indicators: Dict[str, Dict], data: pd.DataFrame) -> make_subplots:
     """
-    Generator all the indicator selected by the user for a specific row
+    Generate all the indicators selected by the user for a specific row, based on the configuration
     :param fig: Plot figure to append to
     :param row: row number for this plot
-    :param indicators: List of indicators present in the dataframe
+    :param indicators: Dict of Indicators with configuration options.
+                       Dict key must correspond to dataframe column.
     :param data: candlestick DataFrame
     """
-    for indicator in indicators:
+    for indicator, conf in indicators.items():
+        logger.debug(f"indicator {indicator} with config {conf}")
         if indicator in data:
-            # TODO: Figure out why scattergl causes problems
-            scattergl = go.Scatter(
-                x=data['date'],
-                y=data[indicator].values,
-                mode='lines',
-                name=indicator
+            kwargs = {'x': data['date'],
+                      'y': data[indicator].values,
+                      'mode': 'lines',
+                      'name': indicator
+                      }
+            if 'color' in conf:
+                kwargs.update({'line': {'color': conf['color']}})
+            scatter = go.Scatter(
+                **kwargs
             )
-            fig.add_trace(scattergl, row, 1)
+            fig.add_trace(scatter, row, 1)
         else:
             logger.info(
                 'Indicator "%s" ignored. Reason: This indicator is not found '
@@ -92,7 +97,7 @@ def add_profit(fig, row, data: pd.DataFrame, column: str, name: str) -> make_sub
     :param name: Name to use
     :return: fig with added profit plot
     """
-    profit = go.Scattergl(
+    profit = go.Scatter(
         x=data.index,
         y=data[column],
         name=name,
@@ -108,11 +113,31 @@ def plot_trades(fig, trades: pd.DataFrame) -> make_subplots:
     """
     # Trades can be empty
     if trades is not None and len(trades) > 0:
+        # Create description for sell summarizing the trade
+        trades['desc'] = trades.apply(lambda row: f"{round(row['profitperc'] * 100, 1)}%, "
+                                                  f"{row['sell_reason']}, {row['duration']} min",
+                                                  axis=1)
         trade_buys = go.Scatter(
             x=trades["open_time"],
             y=trades["open_rate"],
             mode='markers',
-            name='trade_buy',
+            name='Trade buy',
+            text=trades["desc"],
+            marker=dict(
+                symbol='circle-open',
+                size=11,
+                line=dict(width=2),
+                color='cyan'
+
+            )
+        )
+
+        trade_sells = go.Scatter(
+            x=trades.loc[trades['profitperc'] > 0, "close_time"],
+            y=trades.loc[trades['profitperc'] > 0, "close_rate"],
+            text=trades.loc[trades['profitperc'] > 0, "desc"],
+            mode='markers',
+            name='Sell - Profit',
             marker=dict(
                 symbol='square-open',
                 size=11,
@@ -120,16 +145,12 @@ def plot_trades(fig, trades: pd.DataFrame) -> make_subplots:
                 color='green'
             )
         )
-        # Create description for sell summarizing the trade
-        desc = trades.apply(lambda row: f"{round(row['profitperc'], 3)}%, {row['sell_reason']}, "
-                                        f"{row['duration']}min",
-                            axis=1)
-        trade_sells = go.Scatter(
-            x=trades["close_time"],
-            y=trades["close_rate"],
-            text=desc,
+        trade_sells_loss = go.Scatter(
+            x=trades.loc[trades['profitperc'] <= 0, "close_time"],
+            y=trades.loc[trades['profitperc'] <= 0, "close_rate"],
+            text=trades.loc[trades['profitperc'] <= 0, "desc"],
             mode='markers',
-            name='trade_sell',
+            name='Sell - Loss',
             marker=dict(
                 symbol='square-open',
                 size=11,
@@ -139,14 +160,53 @@ def plot_trades(fig, trades: pd.DataFrame) -> make_subplots:
         )
         fig.add_trace(trade_buys, 1, 1)
         fig.add_trace(trade_sells, 1, 1)
+        fig.add_trace(trade_sells_loss, 1, 1)
     else:
         logger.warning("No trades found.")
     return fig
 
 
-def generate_candlestick_graph(pair: str, data: pd.DataFrame, trades: pd.DataFrame = None,
+def create_plotconfig(indicators1: List[str], indicators2: List[str],
+                      plot_config: Dict[str, Dict]) -> Dict[str, Dict]:
+    """
+    Combines indicators 1 and indicators 2 into plot_config if necessary
+    :param indicators1: List containing Main plot indicators
+    :param indicators2: List containing Sub plot indicators
+    :param plot_config: Dict of Dicts containing advanced plot configuration
+    :return: plot_config - eventually with indicators 1 and 2
+    """
+
+    if plot_config:
+        if indicators1:
+            plot_config['main_plot'] = {ind: {} for ind in indicators1}
+        if indicators2:
+            plot_config['subplots'] = {'Other': {ind: {} for ind in indicators2}}
+
+    if not plot_config:
+        # If no indicators and no plot-config given, use defaults.
+        if not indicators1:
+            indicators1 = ['sma', 'ema3', 'ema5']
+        if not indicators2:
+            indicators2 = ['macd', 'macdsignal']
+
+        # Create subplot configuration if plot_config is not available.
+        plot_config = {
+            'main_plot': {ind: {} for ind in indicators1},
+            'subplots': {'Other': {ind: {} for ind in indicators2}},
+        }
+    if 'main_plot' not in plot_config:
+        plot_config['main_plot'] = {}
+
+    if 'subplots' not in plot_config:
+        plot_config['subplots'] = {}
+    return plot_config
+
+
+def generate_candlestick_graph(pair: str, data: pd.DataFrame, trades: pd.DataFrame = None, *,
                                indicators1: List[str] = [],
-                               indicators2: List[str] = [],) -> go.Figure:
+                               indicators2: List[str] = [],
+                               plot_config: Dict[str, Dict] = {},
+                               ) -> go.Figure:
     """
     Generate the graph from the data generated by Backtesting or from DB
     Volume will always be ploted in row2, so Row 1 and 3 are to our disposal for custom indicators
@@ -155,21 +215,26 @@ def generate_candlestick_graph(pair: str, data: pd.DataFrame, trades: pd.DataFra
     :param trades: All trades created
     :param indicators1: List containing Main plot indicators
     :param indicators2: List containing Sub plot indicators
-    :return: None
+    :param plot_config: Dict of Dicts containing advanced plot configuration
+    :return: Plotly figure
     """
+    plot_config = create_plotconfig(indicators1, indicators2, plot_config)
 
+    rows = 2 + len(plot_config['subplots'])
+    row_widths = [1 for _ in plot_config['subplots']]
     # Define the graph
     fig = make_subplots(
-        rows=3,
+        rows=rows,
         cols=1,
         shared_xaxes=True,
-        row_width=[1, 1, 4],
+        row_width=row_widths + [1, 4],
         vertical_spacing=0.0001,
     )
     fig['layout'].update(title=pair)
     fig['layout']['yaxis1'].update(title='Price')
     fig['layout']['yaxis2'].update(title='Volume')
-    fig['layout']['yaxis3'].update(title='Other')
+    for i, name in enumerate(plot_config['subplots']):
+        fig['layout'][f'yaxis{3 + i}'].update(title=name)
     fig['layout']['xaxis']['rangeslider'].update(visible=False)
 
     # Common information
@@ -221,26 +286,31 @@ def generate_candlestick_graph(pair: str, data: pd.DataFrame, trades: pd.DataFra
         else:
             logger.warning("No sell-signals found.")
 
+    # TODO: Figure out why scattergl causes problems plotly/plotly.js#2284
     if 'bb_lowerband' in data and 'bb_upperband' in data:
-        bb_lower = go.Scattergl(
+        bb_lower = go.Scatter(
             x=data.date,
             y=data.bb_lowerband,
-            name='BB lower',
+            showlegend=False,
             line={'color': 'rgba(255,255,255,0)'},
         )
-        bb_upper = go.Scattergl(
+        bb_upper = go.Scatter(
             x=data.date,
             y=data.bb_upperband,
-            name='BB upper',
+            name='Bollinger Band',
             fill="tonexty",
             fillcolor="rgba(0,176,246,0.2)",
             line={'color': 'rgba(255,255,255,0)'},
         )
         fig.add_trace(bb_lower, 1, 1)
         fig.add_trace(bb_upper, 1, 1)
+        if ('bb_upperband' in plot_config['main_plot']
+           and 'bb_lowerband' in plot_config['main_plot']):
+            del plot_config['main_plot']['bb_upperband']
+            del plot_config['main_plot']['bb_lowerband']
 
     # Add indicators to main plot
-    fig = add_indicators(fig=fig, row=1, indicators=indicators1, data=data)
+    fig = add_indicators(fig=fig, row=1, indicators=plot_config['main_plot'], data=data)
 
     fig = plot_trades(fig, trades)
 
@@ -248,26 +318,31 @@ def generate_candlestick_graph(pair: str, data: pd.DataFrame, trades: pd.DataFra
     volume = go.Bar(
         x=data['date'],
         y=data['volume'],
-        name='Volume'
+        name='Volume',
+        marker_color='DarkSlateGrey',
+        marker_line_color='DarkSlateGrey'
     )
     fig.add_trace(volume, 2, 1)
 
-    # Add indicators to seperate row
-    fig = add_indicators(fig=fig, row=3, indicators=indicators2, data=data)
+    # Add indicators to separate row
+    for i, name in enumerate(plot_config['subplots']):
+        fig = add_indicators(fig=fig, row=3 + i,
+                             indicators=plot_config['subplots'][name],
+                             data=data)
 
     return fig
 
 
 def generate_profit_graph(pairs: str, tickers: Dict[str, pd.DataFrame],
-                          trades: pd.DataFrame) -> go.Figure:
+                          trades: pd.DataFrame, timeframe: str) -> go.Figure:
     # Combine close-values for all pairs, rename columns to "pair"
     df_comb = combine_tickers_with_mean(tickers, "close")
 
     # Add combined cumulative profit
-    df_comb = create_cum_profit(df_comb, trades, 'cum_profit')
+    df_comb = create_cum_profit(df_comb, trades, 'cum_profit', timeframe)
 
     # Plot the pairs average close prices, and total profit growth
-    avgclose = go.Scattergl(
+    avgclose = go.Scatter(
         x=df_comb.index,
         y=df_comb['mean'],
         name='Avg close price',
@@ -288,19 +363,19 @@ def generate_profit_graph(pairs: str, tickers: Dict[str, pd.DataFrame],
 
     for pair in pairs:
         profit_col = f'cum_profit_{pair}'
-        df_comb = create_cum_profit(df_comb, trades[trades['pair'] == pair], profit_col)
+        df_comb = create_cum_profit(df_comb, trades[trades['pair'] == pair], profit_col, timeframe)
 
         fig = add_profit(fig, 3, df_comb, profit_col, f"Profit {pair}")
 
     return fig
 
 
-def generate_plot_filename(pair, ticker_interval) -> str:
+def generate_plot_filename(pair, timeframe) -> str:
     """
-    Generate filenames per pair/ticker_interval to be used for storing plots
+    Generate filenames per pair/timeframe to be used for storing plots
     """
     pair_name = pair.replace("/", "_")
-    file_name = 'freqtrade-plot-' + pair_name + '-' + ticker_interval + '.html'
+    file_name = 'freqtrade-plot-' + pair_name + '-' + timeframe + '.html'
 
     logger.info('Generate plot file for %s', pair)
 
@@ -311,8 +386,9 @@ def store_plot_file(fig, filename: str, directory: Path, auto_open: bool = False
     """
     Generate a plot html file from pre populated fig plotly object
     :param fig: Plotly Figure to plot
-    :param pair: Pair to plot (used as filename and Plot title)
-    :param ticker_interval: Used as part of the filename
+    :param filename: Name to store the file as
+    :param directory: Directory to store the file in
+    :param auto_open: Automatically open files saved
     :return: None
     """
     directory.mkdir(parents=True, exist_ok=True)
@@ -334,7 +410,7 @@ def load_and_plot_trades(config: Dict[str, Any]):
     - Generate plot files
     :return: None
     """
-    strategy = StrategyResolver(config).strategy
+    strategy = StrategyResolver.load_strategy(config)
 
     plot_elements = init_plotscript(config)
     trades = plot_elements['trades']
@@ -353,8 +429,9 @@ def load_and_plot_trades(config: Dict[str, Any]):
             pair=pair,
             data=dataframe,
             trades=trades_pair,
-            indicators1=config["indicators1"],
-            indicators2=config["indicators2"],
+            indicators1=config.get("indicators1", []),
+            indicators2=config.get("indicators2", []),
+            plot_config=strategy.plot_config if hasattr(strategy, 'plot_config') else {}
         )
 
         store_plot_file(fig, filename=generate_plot_filename(pair, config['ticker_interval']),
@@ -371,15 +448,17 @@ def plot_profit(config: Dict[str, Any]) -> None:
     in helping out to find a good algorithm.
     """
     plot_elements = init_plotscript(config)
-    trades = load_trades(config['trade_source'],
-                         db_url=str(config.get('db_url')),
-                         exportfilename=str(config.get('exportfilename')),
-                         )
+    trades = plot_elements['trades']
     # Filter trades to relevant pairs
-    trades = trades[trades['pair'].isin(plot_elements["pairs"])]
+    # Remove open pairs - we don't know the profit yet so can't calculate profit for these.
+    # Also, If only one open pair is left, then the profit-generation would fail.
+    trades = trades[(trades['pair'].isin(plot_elements["pairs"]))
+                    & (~trades['close_time'].isnull())
+                    ]
 
     # Create an average close price of all the pairs that were involved.
     # this could be useful to gauge the overall market trend
-    fig = generate_profit_graph(plot_elements["pairs"], plot_elements["tickers"], trades)
+    fig = generate_profit_graph(plot_elements["pairs"], plot_elements["tickers"],
+                                trades, config.get('ticker_interval', '5m'))
     store_plot_file(fig, filename='freqtrade-profit-plot.html',
                     directory=config['user_data_dir'] / "plot", auto_open=True)
