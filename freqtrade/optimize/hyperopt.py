@@ -17,6 +17,7 @@ from pprint import pprint
 from typing import Any, Dict, List, Optional
 
 import rapidjson
+import progressbar
 from colorama import Fore, Style
 from colorama import init as colorama_init
 from joblib import (Parallel, cpu_count, delayed, dump, load,
@@ -268,6 +269,7 @@ class Hyperopt:
             # Print '\n' after each 100th epoch to separate dots from the log messages.
             # Otherwise output is messy on a terminal.
             print('.', end='' if results['current_epoch'] % 100 != 0 else None)  # type: ignore
+            progressbar.streams.flush()
             sys.stdout.flush()
 
         if self.print_all or is_best:
@@ -278,6 +280,9 @@ class Hyperopt:
                                     self.print_all, self.print_colorized,
                                     self.hyperopt_table_header)
             self.hyperopt_table_header = 2
+            progressbar.streams.flush()
+
+        self.progress_bar.update(results['current_epoch'])
 
     @staticmethod
     def print_results_explanation(results, total_epochs, highlight_best: bool,
@@ -601,6 +606,11 @@ class Hyperopt:
 
         try:
             with Parallel(n_jobs=config_jobs) as parallel:
+              with progressbar.ProgressBar(max_value=self.total_epochs,
+                                           redirect_stdout=True,
+                                           redirect_stderr=True,) as bar:
+                                           #widgets=[progressbar.AnimatedMarker()]) as bar:
+                self.progress_bar = bar
                 jobs = parallel._effective_n_jobs()
                 logger.info(f'Effective number of parallel workers used: {jobs}')
                 EVALS = ceil(self.total_epochs / jobs)
@@ -650,3 +660,9 @@ class Hyperopt:
             # This is printed when Ctrl+C is pressed quickly, before first epochs have
             # a chance to be evaluated.
             print("No epochs evaluated yet, no best result.")
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        del state['trials']
+        del state['progress_bar']
+        return state

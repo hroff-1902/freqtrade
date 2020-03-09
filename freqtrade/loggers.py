@@ -5,6 +5,8 @@ from logging import Formatter
 from logging.handlers import RotatingFileHandler, SysLogHandler
 from typing import Any, Dict, List
 
+import progressbar
+
 from freqtrade.exceptions import OperationalException
 
 
@@ -36,6 +38,7 @@ def setup_logging(config: Dict[str, Any]) -> None:
     # Log level
     verbosity = config['verbosity']
 
+    progressbar.streams.wrap_stderr()
     # Log to stderr
     log_handlers: List[logging.Handler] = [logging.StreamHandler(sys.stderr)]
 
