@@ -144,10 +144,10 @@ It is recommended to use version control to keep track of changes to your strate
 ### How to use **--strategy**?
 
 This parameter will allow you to load your custom strategy class.
-Per default without `--strategy` or `-s` the bot will load the
-`DefaultStrategy` included with the bot (`freqtrade/strategy/default_strategy.py`).
+To test the bot installation, you can use the `SampleStrategy` installed by the `create-userdir` subcommand (usually `user_data/strategy/sample_strategy.py`).
 
-The bot will search your strategy file within `user_data/strategies` and `freqtrade/strategy`.
+The bot will search your strategy file within `user_data/strategies`.
+To use other directories, please read the next section about `--strategy-path`.
 
 To load a strategy, simply pass the class name (e.g.: `CustomStrategy`) in this parameter.
 
@@ -275,7 +275,7 @@ Check the corresponding [Data Downloading](data-download.md) section for more de
 ## Hyperopt commands
 
 To optimize your strategy, you can use hyperopt parameter hyperoptimization
-to find optimal parameter values for your stategy.
+to find optimal parameter values for your strategy.
 
 ```
 usage: freqtrade hyperopt [-h] [-v] [--logfile FILE] [-V] [-c PATH] [-d PATH]
@@ -323,7 +323,7 @@ optional arguments:
   --print-all           Print all results, not only the best ones.
   --no-color            Disable colorization of hyperopt results. May be
                         useful if you are redirecting output to a file.
-  --print-json          Print best result detailization in JSON format.
+  --print-json          Print best results in JSON format.
   -j JOBS, --job-workers JOBS
                         The number of concurrently running jobs for
                         hyperoptimization (hyperopt worker processes). If -1
@@ -341,10 +341,11 @@ optional arguments:
                         class (IHyperOptLoss). Different functions can
                         generate completely different results, since the
                         target for optimization is different. Built-in
-                        Hyperopt-loss-functions are: DefaultHyperOptLoss,
-                        OnlyProfitHyperOptLoss, SharpeHyperOptLoss,
-                        SharpeHyperOptLossDaily.(default:
-                        `DefaultHyperOptLoss`).
+                        Hyperopt-loss-functions are:
+                        DefaultHyperOptLoss, OnlyProfitHyperOptLoss,
+                        SharpeHyperOptLoss, SharpeHyperOptLossDaily,
+                        SortinoHyperOptLoss, SortinoHyperOptLossDaily.
+                        (default: `DefaultHyperOptLoss`).
 
 Common arguments:
   -v, --verbose         Verbose mode (-vv for more, -vvv to get all messages).

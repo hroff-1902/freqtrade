@@ -148,7 +148,7 @@ class Telegram(RPC):
 
         elif msg['type'] == RPCMessageType.SELL_NOTIFICATION:
             msg['amount'] = round(msg['amount'], 8)
-            msg['profit_percent'] = round(msg['profit_percent'] * 100, 2)
+            msg['profit_percent'] = round(msg['profit_ratio'] * 100, 2)
             msg['duration'] = msg['close_date'].replace(
                 microsecond=0) - msg['open_date'].replace(microsecond=0)
             msg['duration_min'] = msg['duration'].total_seconds() / 60
@@ -172,7 +172,8 @@ class Telegram(RPC):
                             ' / {profit_fiat:.3f} {fiat_currency})`').format(**msg)
 
         elif msg['type'] == RPCMessageType.SELL_CANCEL_NOTIFICATION:
-            message = "*{exchange}:* Cancelling Open Sell Order for {pair}".format(**msg)
+            message = ("*{exchange}:* Cancelling Open Sell Order "
+                       "for {pair}. Reason: {reason}").format(**msg)
 
         elif msg['type'] == RPCMessageType.STATUS_NOTIFICATION:
             message = '*Status:* `{status}`'.format(**msg)

@@ -15,7 +15,7 @@ from telegram import Chat, Message, Update
 
 from freqtrade import constants, persistence
 from freqtrade.commands import Arguments
-from freqtrade.data.converter import parse_ticker_dataframe
+from freqtrade.data.converter import ohlcv_to_dataframe
 from freqtrade.edge import Edge, PairInfo
 from freqtrade.exchange import Exchange
 from freqtrade.freqtradebot import FreqtradeBot
@@ -166,24 +166,70 @@ def patch_get_signal(freqtrade: FreqtradeBot, value=(True, False)) -> None:
     freqtrade.exchange.refresh_latest_ohlcv = lambda p: None
 
 
-@pytest.fixture(autouse=True)
-def patch_coinmarketcap(mocker) -> None:
+def create_mock_trades(fee):
     """
-    Mocker to coinmarketcap to speed up tests
-    :param mocker: mocker to patch coinmarketcap class
+    Create some fake trades ...
+    """
+    # Simulate dry_run entries
+    trade = Trade(
+        pair='ETH/BTC',
+        stake_amount=0.001,
+        amount=123.0,
+        fee_open=fee.return_value,
+        fee_close=fee.return_value,
+        open_rate=0.123,
+        exchange='bittrex',
+        open_order_id='dry_run_buy_12345'
+    )
+    Trade.session.add(trade)
+
+    trade = Trade(
+        pair='ETC/BTC',
+        stake_amount=0.001,
+        amount=123.0,
+        fee_open=fee.return_value,
+        fee_close=fee.return_value,
+        open_rate=0.123,
+        close_rate=0.128,
+        close_profit=0.005,
+        exchange='bittrex',
+        is_open=False,
+        open_order_id='dry_run_sell_12345'
+    )
+    Trade.session.add(trade)
+
+    # Simulate prod entry
+    trade = Trade(
+        pair='ETC/BTC',
+        stake_amount=0.001,
+        amount=123.0,
+        fee_open=fee.return_value,
+        fee_close=fee.return_value,
+        open_rate=0.123,
+        exchange='bittrex',
+        open_order_id='prod_buy_12345'
+    )
+    Trade.session.add(trade)
+
+
+@pytest.fixture(autouse=True)
+def patch_coingekko(mocker) -> None:
+    """
+    Mocker to coingekko to speed up tests
+    :param mocker: mocker to patch coingekko class
     :return: None
     """
 
-    tickermock = MagicMock(return_value={'price_usd': 12345.0})
-    listmock = MagicMock(return_value={'data': [{'id': 1, 'name': 'Bitcoin', 'symbol': 'BTC',
-                                                 'website_slug': 'bitcoin'},
-                                                {'id': 1027, 'name': 'Ethereum', 'symbol': 'ETH',
-                                                 'website_slug': 'ethereum'}
-                                                ]})
+    tickermock = MagicMock(return_value={'bitcoin': {'usd': 12345.0}, 'ethereum': {'usd': 12345.0}})
+    listmock = MagicMock(return_value=[{'id': 'bitcoin', 'name': 'Bitcoin', 'symbol': 'btc',
+                                        'website_slug': 'bitcoin'},
+                                       {'id': 'ethereum', 'name': 'Ethereum', 'symbol': 'eth',
+                                        'website_slug': 'ethereum'}
+                                       ])
     mocker.patch.multiple(
-        'freqtrade.rpc.fiat_convert.Market',
-        ticker=tickermock,
-        listings=listmock,
+        'freqtrade.rpc.fiat_convert.CoinGeckoAPI',
+        get_price=tickermock,
+        get_coins_list=listmock,
 
     )
 
@@ -575,7 +621,34 @@ def get_markets():
                 }
             },
             'info': {},
-        }
+        },
+        'LTC/ETH': {
+            'id': 'LTCETH',
+            'symbol': 'LTC/ETH',
+            'base': 'LTC',
+            'quote': 'ETH',
+            'active': True,
+            'precision': {
+                'base': 8,
+                'quote': 8,
+                'amount': 3,
+                'price': 5
+            },
+            'limits': {
+                'amount': {
+                    'min': 0.001,
+                    'max': 10000000.0
+                },
+                'price': {
+                    'min': 1e-05,
+                    'max': 1000.0
+                },
+                'cost': {
+                    'min': 0.01,
+                    'max': None
+                }
+            },
+        },
     }
 
 
@@ -666,6 +739,31 @@ def shitcoinmarkets(markets):
             "future": False,
             "active": True
         },
+        'ADAHALF/USDT': {
+            "percentage": True,
+            "tierBased": False,
+            "taker": 0.001,
+            "maker": 0.001,
+            "precision": {
+                "base": 8,
+                "quote": 8,
+                "amount": 2,
+                "price": 4
+            },
+            "limits": {
+            },
+            "id": "ADAHALFUSDT",
+            "symbol": "ADAHALF/USDT",
+            "base": "ADAHALF",
+            "quote": "USDT",
+            "baseId": "ADAHALF",
+            "quoteId": "USDT",
+            "info": {},
+            "type": "spot",
+            "spot": True,
+            "future": False,
+            "active": True
+    },
         })
     return shitmarkets
 
@@ -685,6 +783,7 @@ def limit_buy_order():
         'datetime': arrow.utcnow().isoformat(),
         'price': 0.00001099,
         'amount': 90.99181073,
+        'filled': 90.99181073,
         'remaining': 0.0,
         'status': 'closed'
     }
@@ -700,6 +799,7 @@ def market_buy_order():
         'datetime': arrow.utcnow().isoformat(),
         'price': 0.00004099,
         'amount': 91.99181073,
+        'filled': 91.99181073,
         'remaining': 0.0,
         'status': 'closed'
     }
@@ -715,6 +815,7 @@ def market_sell_order():
         'datetime': arrow.utcnow().isoformat(),
         'price': 0.00004173,
         'amount': 91.99181073,
+        'filled': 91.99181073,
         'remaining': 0.0,
         'status': 'closed'
     }
@@ -730,6 +831,7 @@ def limit_buy_order_old():
         'datetime': str(arrow.utcnow().shift(minutes=-601).datetime),
         'price': 0.00001099,
         'amount': 90.99181073,
+        'filled': 0.0,
         'remaining': 90.99181073,
         'status': 'open'
     }
@@ -745,6 +847,7 @@ def limit_sell_order_old():
         'datetime': arrow.utcnow().shift(minutes=-601).isoformat(),
         'price': 0.00001099,
         'amount': 90.99181073,
+        'filled': 0.0,
         'remaining': 90.99181073,
         'status': 'open'
     }
@@ -760,6 +863,7 @@ def limit_buy_order_old_partial():
         'datetime': arrow.utcnow().shift(minutes=-601).isoformat(),
         'price': 0.00001099,
         'amount': 90.99181073,
+        'filled': 23.0,
         'remaining': 67.99181073,
         'status': 'open'
     }
@@ -783,6 +887,7 @@ def limit_sell_order():
         'datetime': arrow.utcnow().isoformat(),
         'price': 0.00001173,
         'amount': 90.99181073,
+        'filled': 90.99181073,
         'remaining': 0.0,
         'status': 'closed'
     }
@@ -822,15 +927,15 @@ def order_book_l2():
 
 
 @pytest.fixture
-def ticker_history_list():
+def ohlcv_history_list():
     return [
         [
             1511686200000,  # unix timestamp ms
-            8.794e-05,  # open
-            8.948e-05,  # high
-            8.794e-05,  # low
-            8.88e-05,  # close
-            0.0877869,  # volume (in quote currency)
+            8.794e-05,      # open
+            8.948e-05,      # high
+            8.794e-05,      # low
+            8.88e-05,       # close
+            0.0877869,      # volume (in quote currency)
         ],
         [
             1511686500000,
@@ -852,8 +957,9 @@ def ticker_history_list():
 
 
 @pytest.fixture
-def ticker_history(ticker_history_list):
-    return parse_ticker_dataframe(ticker_history_list, "5m", pair="UNITTEST/BTC", fill_missing=True)
+def ohlcv_history(ohlcv_history_list):
+    return ohlcv_to_dataframe(ohlcv_history_list, "5m", pair="UNITTEST/BTC",
+                              fill_missing=True)
 
 
 @pytest.fixture
@@ -1162,14 +1268,37 @@ def tickers():
             "quoteVolume": 323652.075405,
             "info": {}
         },
+        # Example of leveraged pair with incomplete info
+        "ADAHALF/USDT": {
+            "symbol": "ADAHALF/USDT",
+            "timestamp": 1580469388244,
+            "datetime": "2020-01-31T11:16:28.244Z",
+            "high": None,
+            "low": None,
+            "bid": 0.7305,
+            "bidVolume": None,
+            "ask": 0.7342,
+            "askVolume": None,
+            "vwap": None,
+            "open": None,
+            "close": None,
+            "last": None,
+            "previousClose": None,
+            "change": None,
+            "percentage": 2.628,
+            "average": None,
+            "baseVolume": 0.0,
+            "quoteVolume": 0.0,
+            "info": {}
+        },
     })
 
 
 @pytest.fixture
 def result(testdatadir):
     with (testdatadir / 'UNITTEST_BTC-1m.json').open('r') as data_file:
-        return parse_ticker_dataframe(json.load(data_file), '1m', pair="UNITTEST/BTC",
-                                      fill_missing=True)
+        return ohlcv_to_dataframe(json.load(data_file), '1m', pair="UNITTEST/BTC",
+                                  fill_missing=True)
 
 
 @pytest.fixture(scope="function")

@@ -24,6 +24,7 @@ hyperopt = [
     'scikit-optimize',
     'filelock',
     'joblib',
+    'progressbar2',
     ]
 
 develop = [
@@ -73,7 +74,7 @@ setup(name='freqtrade',
           'jsonschema',
           'TA-Lib',
           'tabulate',
-          'coinmarketcap',
+          'pycoingecko',
           'py_find_1st',
           'python-rapidjson',
           'sdnotify',
